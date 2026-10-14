@@ -33,17 +33,37 @@ button:focus-visible,label.btn:focus-within,select:focus-visible{outline:2px sol
 .grow{flex:1;text-align:center}
 input[type=file]{position:absolute;opacity:0;width:1px;height:1px}
 .handle{position:absolute;width:34px;height:34px;margin:-17px 0 0 -17px;border-radius:50%;border:3px solid var(--accent);background:rgba(58,209,164,.25)}
+#cambox{position:fixed;inset:0;z-index:10;background:#000}
+#vid,#ov{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+#hint{position:absolute;left:50%;top:calc(16px + env(safe-area-inset-top));transform:translateX(-50%);background:rgba(0,0,0,.6);color:#fff;padding:8px 14px;border-radius:20px;font-size:14px;white-space:nowrap}
+#cambar{position:absolute;left:0;right:0;bottom:0;display:flex;align-items:center;justify-content:space-around;padding:16px 16px calc(24px + env(safe-area-inset-bottom));background:linear-gradient(transparent,rgba(0,0,0,.7))}
+#cambar button{background:rgba(0,0,0,.5);color:#fff;border-color:rgba(255,255,255,.3);min-width:84px}
+#shutter{width:80px;height:80px;min-width:80px!important;padding:0!important;border-radius:50%!important;background:#fff!important;border:0!important}
+#shutter svg{width:80px;height:80px;transform:rotate(-90deg)}
+.ring{fill:none;stroke:#ccc;stroke-width:6}.prog{fill:none;stroke:#3ad1a4;stroke-width:6;stroke-dasharray:226;stroke-dashoffset:226}
+#flash{position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;transition:opacity .25s}
 </style>
 </head>
 <body>
 <header><h1>Paper Scanner</h1><span id="status">0 pages</span></header>
+<div id="cambox" hidden>
+  <video id="vid" playsinline muted autoplay></video>
+  <canvas id="ov"></canvas>
+  <div id="hint">Point at the paper</div>
+  <div id="cambar">
+    <button id="camClose">Done</button>
+    <button id="shutter" aria-label="Take photo"><svg viewBox="0 0 80 80"><circle cx="40" cy="40" r="36" class="ring"/><circle id="prog" cx="40" cy="40" r="36" class="prog"/></svg></button>
+    <button id="autoBtn" aria-pressed="true">Auto ON</button>
+  </div>
+  <div id="flash"></div>
+</div>
 <main>
-  <div class="empty" id="empty"><b>Place paper on any surface</b>Tap Scan to take a photo. Edges are found automatically for any paper size or colour. Drag the green corners to adjust.</div>
+  <div class="empty" id="empty"><b>Place paper on any surface</b>Tap Scan and point your camera at the paper. It is outlined live and captured automatically when you hold still. Scan as many pages as you like, then tap Done.</div>
   <div id="stage" hidden><canvas id="view"></canvas></div>
 </main>
 <div id="strip"></div>
 <nav>
-  <label class="btn primary grow" id="scanBtn">📷 Scan<input type="file" id="cam" accept="image/*" capture="environment"></label>
+  <button class="primary grow" id="scanBtn">📷 Scan</button>
   <label class="btn">Gallery<input type="file" id="gal" accept="image/*" multiple></label>
   <select id="mode" aria-label="Colour mode"><option value="clean" selected>Colour, no shadows</option><option value="color">Original</option><option value="enhance">Enhanced</option><option value="gray">Grey</option><option value="bw">B&amp;W</option></select>
   <button id="keep" disabled>Add page</button>
@@ -54,7 +74,60 @@ const $=id=>document.getElementById(id);
 const view=$('view'),ctx=view.getContext('2d'),stage=$('stage');
 let img=null,corners=null,scale=1,pages=[],queue=[];
 
-$('cam').onchange=e=>load([...e.target.files]);
+/* ---- Live camera with real-time edge detection and auto-capture ---- */
+const vid=$('vid'),ov=$('ov'),octx=ov.getContext('2d');
+let stream=null,live=null,smooth=null,steady=0,auto=true,busy=false,loopT=0;
+const NEED=10; // steady frames before auto-capture (~1.5s)
+$('scanBtn').onclick=openCam;
+$('camClose').onclick=closeCam;
+$('autoBtn').onclick=()=>{auto=!auto;$('autoBtn').textContent='Auto '+(auto?'ON':'OFF');$('autoBtn').setAttribute('aria-pressed',auto);steady=0;setProg(0)};
+$('shutter').onclick=()=>capture();
+async function openCam(){
+  try{
+    stream=await navigator.mediaDevices.getUserMedia({audio:false,video:{facingMode:{ideal:'environment'},width:{ideal:3840},height:{ideal:2160}}});
+  }catch(e){$('status').textContent='Camera not available: '+e.message;return}
+  vid.srcObject=stream;$('cambox').hidden=false;await vid.play();
+  smooth=null;steady=0;busy=false;loop();
+}
+function closeCam(){clearTimeout(loopT);if(stream)stream.getTracks().forEach(t=>t.stop());stream=null;$('cambox').hidden=true}
+function setProg(p){$('prog').style.strokeDashoffset=226*(1-p)}
+// map video pixel coords to screen coords (object-fit: cover)
+function toScreen(p){const vw=vid.videoWidth,vh=vid.videoHeight,cw=ov.width,ch=ov.height,k=Math.max(cw/vw,ch/vh);
+  return [(p[0]*k)+(cw-vw*k)/2,(p[1]*k)+(ch-vh*k)/2]}
+function loop(){
+  if(!stream)return;
+  if(vid.videoWidth&&!busy){
+    ov.width=ov.clientWidth;ov.height=ov.clientHeight;
+    const q=detect(vid,true);
+    octx.clearRect(0,0,ov.width,ov.height);
+    if(q&&convex(q)){
+      let move=1;
+      if(smooth){move=q.reduce((m,p,i)=>Math.max(m,Math.hypot(p[0]-smooth[i][0],p[1]-smooth[i][1])),0)/vid.videoWidth;
+        smooth=smooth.map((p,i)=>[p[0]*.5+q[i][0]*.5,p[1]*.5+q[i][1]*.5])}else smooth=q;
+      steady=move<0.02?steady+1:0;
+      const c=smooth.map(toScreen);
+      octx.fillStyle='rgba(58,209,164,.22)';octx.strokeStyle='#3ad1a4';octx.lineWidth=4;
+      octx.beginPath();octx.moveTo(...c[0]);c.slice(1).forEach(p=>octx.lineTo(...p));octx.closePath();octx.fill();octx.stroke();
+      $('hint').textContent=auto?(steady>2?'Hold still…':'Paper found'):'Paper found – tap the button';
+      if(auto){setProg(Math.min(1,steady/NEED));if(steady>=NEED)capture()}
+    }else{smooth=null;steady=0;setProg(0);$('hint').textContent='Point at the paper'}
+  }
+  loopT=setTimeout(loop,120);
+}
+function convex(q){let s=0;for(let i=0;i<4;i++){const a=q[i],b=q[(i+1)%4],c=q[(i+2)%4];
+  const z=(b[0]-a[0])*(c[1]-b[1])-(b[1]-a[1])*(c[0]-b[0]);if(z<=0)return false}
+  const [a,b,c,d]=q,area=Math.abs((a[0]*b[1]-b[0]*a[1])+(b[0]*c[1]-c[0]*b[1])+(c[0]*d[1]-d[0]*c[1])+(d[0]*a[1]-a[0]*d[1]))/2;
+  return area>vid.videoWidth*vid.videoHeight*0.08}
+function capture(){
+  if(busy)return;busy=true;steady=0;setProg(0);
+  const c=document.createElement('canvas');c.width=vid.videoWidth;c.height=vid.videoHeight;c.getContext('2d').drawImage(vid,0,0);
+  $('flash').style.opacity=1;setTimeout(()=>$('flash').style.opacity=0,150);
+  const q=smooth||detect(c);
+  $('hint').textContent='Saving page…';
+  setTimeout(()=>{img=c;corners=q.map(p=>[p[0],p[1]]);addPage();
+    $('hint').textContent='Page '+pages.length+' added – next page';
+    smooth=null;setTimeout(()=>{busy=false},1200)},40);
+}
 $('gal').onchange=e=>load([...e.target.files]);
 function load(files){queue=files;next();}
 function next(){
@@ -93,8 +166,9 @@ function makeHandles(){
 }
 
 /* ---- Paper detection: works for any paper colour by contrasting it against the surface ---- */
-function detect(im){
-  const W=240,H=Math.round(im.height*W/im.width),f=im.width/W;
+function detect(im,live){
+  const IW=im.videoWidth||im.width,IH=im.videoHeight||im.height;
+  const W=live?160:240,H=Math.round(IH*W/IW),f=IW/W;
   const c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d');
   x.drawImage(im,0,0,W,H);const d=x.getImageData(0,0,W,H).data;
   // Lab-ish colour per pixel
@@ -123,7 +197,7 @@ function detect(im){
     while(st.length){const p=st.pop();n++;const px=p%W,py=p/W|0;
       for(const q of [px>0?p-1:-1,px<W-1?p+1:-1,py>0?p-W:-1,py<H-1?p+W:-1])if(q>=0&&M[q]&&!lab[q]){lab[q]=id;st.push(q)}}
     if(n>bestN){bestN=n;bestId=id}}
-  if(bestN<W*H*0.05)return full(im);
+  if(bestN<W*H*0.08||(live&&bestN>W*H*0.97))return live?null:full(im);
   // Corners = extreme points along the diagonals
   let tl=[0,0,1e9],tr=[0,0,-1e9],br=[0,0,-1e9],bl=[0,0,1e9];
   for(let i=0;i<W*H;i++)if(lab[i]===bestId){const px=i%W,py=i/W|0,s=px+py,df=px-py;
@@ -190,9 +264,9 @@ function filter(d,mode,w,h){if(mode==='color')return;
 
 $('keep').onclick=()=>{
   $('keep').disabled=true;$('status').textContent='Flattening…';
-  setTimeout(()=>{const c=warp();pages.push(c.toDataURL('image/jpeg',.85));pages[pages.length-1]={src:pages[pages.length-1],w:c.width,h:c.height};
-    renderStrip();stage.hidden=true;$('empty').hidden=false;img=null;next();},30);
+  setTimeout(()=>{addPage();stage.hidden=true;$('empty').hidden=false;img=null;next();},30);
 };
+function addPage(){const c=warp();pages.push({src:c.toDataURL('image/jpeg',.85),w:c.width,h:c.height});renderStrip()}
 function renderStrip(){
   const s=$('strip');s.innerHTML='';
   pages.forEach((p,i)=>{const t=document.createElement('div');t.className='thumb';
@@ -209,7 +283,7 @@ $('pdf').onclick=()=>{
   const d=new Date(),n=`Scan_${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}_${d.getHours()}${String(d.getMinutes()).padStart(2,'0')}.pdf`;
   if(window.Android){Android.savePdf(n,doc.output('datauristring').split(',')[1]);}else doc.save(n);$('status').textContent='Saved '+n;
 };
-addEventListener('resize',()=>{if(img)show()});
+addEventListener('resize',()=>{if(img&&!stream)show()});
 </script>
 </body>
 </html>

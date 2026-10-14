@@ -12,6 +12,11 @@ import android.os.Environment;
 import android.provider.MediaStore;
 import android.util.Base64;
 import android.webkit.JavascriptInterface;
+import android.webkit.PermissionRequest;
+import android.webkit.WebResourceRequest;
+import android.webkit.WebResourceResponse;
+import android.webkit.WebViewClient;
+import androidx.webkit.WebViewAssetLoader;
 import android.webkit.ValueCallback;
 import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
@@ -30,6 +35,8 @@ public class MainActivity extends Activity {
     private ValueCallback<Uri[]> pending;
     private WebChromeClient.FileChooserParams pendingParams;
     private Uri photoUri;
+    private PermissionRequest camRequest;
+    private static final int LIVE_PERM = 3;
 
     @Override
     protected void onCreate(Bundle saved) {
@@ -40,7 +47,29 @@ public class MainActivity extends Activity {
         s.setDomStorageEnabled(true);
         s.setAllowFileAccess(true);
         web.addJavascriptInterface(new Bridge(), "Android");
+        s.setMediaPlaybackRequiresUserGesture(false);
+        final WebViewAssetLoader loader = new WebViewAssetLoader.Builder()
+                .addPathHandler("/assets/", new WebViewAssetLoader.AssetsPathHandler(this)).build();
+        web.setWebViewClient(new WebViewClient() {
+            @Override
+            public WebResourceResponse shouldInterceptRequest(WebView v, WebResourceRequest r) {
+                return loader.shouldInterceptRequest(r.getUrl());
+            }
+        });
         web.setWebChromeClient(new WebChromeClient() {
+            @Override
+            public void onPermissionRequest(PermissionRequest req) {
+                runOnUiThread(() -> {
+                    if (Build.VERSION.SDK_INT >= 23
+                            && checkSelfPermission(Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                        camRequest = req;
+                        requestPermissions(new String[]{Manifest.permission.CAMERA}, LIVE_PERM);
+                    } else {
+                        req.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+                    }
+                });
+            }
+
             @Override
             public boolean onShowFileChooser(WebView v, ValueCallback<Uri[]> cb, FileChooserParams p) {
                 if (pending != null) pending.onReceiveValue(null);
@@ -56,7 +85,7 @@ public class MainActivity extends Activity {
             }
         });
         setContentView(web);
-        web.loadUrl("file:///android_asset/index.html");
+        web.loadUrl("https://appassets.androidplatform.net/assets/index.html");
     }
 
     private void openPicker() {
@@ -89,6 +118,16 @@ public class MainActivity extends Activity {
 
     @Override
     public void onRequestPermissionsResult(int code, String[] perms, int[] res) {
+        if (code == LIVE_PERM && camRequest != null) {
+            if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED)
+                camRequest.grant(new String[]{PermissionRequest.RESOURCE_VIDEO_CAPTURE});
+            else {
+                camRequest.deny();
+                Toast.makeText(this, "Camera permission is needed to scan", Toast.LENGTH_LONG).show();
+            }
+            camRequest = null;
+            return;
+        }
         if (code == CAM_PERM && pending != null) {
             if (res.length > 0 && res[0] == PackageManager.PERMISSION_GRANTED) openPicker();
             else {
