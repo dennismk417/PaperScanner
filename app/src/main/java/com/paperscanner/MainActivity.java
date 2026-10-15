@@ -162,27 +162,34 @@ public class MainActivity extends Activity {
 
     class Bridge {
         @JavascriptInterface
-        public void savePdf(String name, String b64) {
+        public String saveFile(String name, String mime, String b64) {
             byte[] bytes = Base64.decode(b64, Base64.DEFAULT);
-            String msg;
+            boolean image = mime.startsWith("image/");
             try {
                 if (Build.VERSION.SDK_INT >= 29) {
                     ContentValues cv = new ContentValues();
-                    cv.put(MediaStore.Downloads.DISPLAY_NAME, name);
-                    cv.put(MediaStore.Downloads.MIME_TYPE, "application/pdf");
-                    cv.put(MediaStore.Downloads.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
-                    Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                    cv.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                    cv.put(MediaStore.MediaColumns.MIME_TYPE, mime);
+                    cv.put(MediaStore.MediaColumns.RELATIVE_PATH,
+                            image ? Environment.DIRECTORY_PICTURES + "/PaperScanner" : Environment.DIRECTORY_DOWNLOADS);
+                    Uri col = image ? MediaStore.Images.Media.EXTERNAL_CONTENT_URI : MediaStore.Downloads.EXTERNAL_CONTENT_URI;
+                    Uri uri = getContentResolver().insert(col, cv);
                     try (OutputStream os = getContentResolver().openOutputStream(uri)) { os.write(bytes); }
                 } else {
-                    File dir = getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS);
+                    File dir = getExternalFilesDir(image ? Environment.DIRECTORY_PICTURES : Environment.DIRECTORY_DOCUMENTS);
                     try (FileOutputStream os = new FileOutputStream(new File(dir, name))) { os.write(bytes); }
                 }
-                msg = "Saved to Downloads: " + name;
+                return "ok";
             } catch (Exception e) {
-                msg = "Could not save PDF: " + e.getMessage();
+                return "Could not save " + name + ": " + e.getMessage();
             }
-            final String m = msg;
-            runOnUiThread(() -> Toast.makeText(MainActivity.this, m, Toast.LENGTH_LONG).show());
+        }
+
+        @JavascriptInterface
+        public void savePdf(String name, String b64) {
+            final String r = saveFile(name, "application/pdf", b64);
+            runOnUiThread(() -> Toast.makeText(MainActivity.this,
+                    "ok".equals(r) ? "Saved to Downloads: " + name : r, Toast.LENGTH_LONG).show());
         }
     }
 }
