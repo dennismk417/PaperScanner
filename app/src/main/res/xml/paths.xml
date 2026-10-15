@@ -1,2 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
-<paths><cache-path name="scans" path="." /></paths>
+<paths>
+    <cache-path name="scans" path="." />
+    <external-files-path name="saved" path="." />
+</paths>

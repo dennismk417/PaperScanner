@@ -156,8 +156,9 @@ public class MainActivity extends Activity {
 
     @Override
     public void onBackPressed() {
-        if (web.canGoBack()) web.goBack();
-        else super.onBackPressed();
+        web.evaluateJavascript("window.onAndroidBack ? window.onAndroidBack() : false", v -> {
+            if (!"true".equals(v)) finish();
+        });
     }
 
     class Bridge {
@@ -175,13 +176,28 @@ public class MainActivity extends Activity {
                     Uri col = image ? MediaStore.Images.Media.EXTERNAL_CONTENT_URI : MediaStore.Downloads.EXTERNAL_CONTENT_URI;
                     Uri uri = getContentResolver().insert(col, cv);
                     try (OutputStream os = getContentResolver().openOutputStream(uri)) { os.write(bytes); }
+                    return "ok|" + uri;
                 } else {
                     File dir = getExternalFilesDir(image ? Environment.DIRECTORY_PICTURES : Environment.DIRECTORY_DOCUMENTS);
-                    try (FileOutputStream os = new FileOutputStream(new File(dir, name))) { os.write(bytes); }
+                    File f = new File(dir, name);
+                    try (FileOutputStream os = new FileOutputStream(f)) { os.write(bytes); }
+                    return "ok|" + FileProvider.getUriForFile(MainActivity.this, getPackageName() + ".files", f);
                 }
-                return "ok";
             } catch (Exception e) {
                 return "Could not save " + name + ": " + e.getMessage();
+            }
+        }
+
+        @JavascriptInterface
+        public String openUri(String uri, String mime) {
+            try {
+                Intent i = new Intent(Intent.ACTION_VIEW);
+                i.setDataAndType(Uri.parse(uri), mime);
+                i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_ACTIVITY_NEW_TASK);
+                startActivity(Intent.createChooser(i, "Open with"));
+                return "ok";
+            } catch (Exception e) {
+                return "No app found to open this file";
             }
         }
 
@@ -189,7 +205,7 @@ public class MainActivity extends Activity {
         public void savePdf(String name, String b64) {
             final String r = saveFile(name, "application/pdf", b64);
             runOnUiThread(() -> Toast.makeText(MainActivity.this,
-                    "ok".equals(r) ? "Saved to Downloads: " + name : r, Toast.LENGTH_LONG).show());
+                    r.startsWith("ok") ? "Saved to Downloads: " + name : r, Toast.LENGTH_LONG).show());
         }
     }
 }
